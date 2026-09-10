@@ -261,10 +261,10 @@
         </div>
 
         <div class="footer-container">
-            <div class="credits">Music: Cybercrunk / Sci-Fi Theme / Rise Above</div>
+            <div class="credits">Music: Cybercrunk / Rise Above</div>
             <div class="bottom-bar">
                 <div class="bottom-btn-group">
-                    <button class="bottom-btn" onclick="toggleMusic()">🎵 Track: <span id="track-name">Sci-Fi Theme</span></button>
+                    <button class="bottom-btn" onclick="toggleMusic()">🎵 Track: <span id="track-name">Cybercrunk</span></button>
                 </div>
                 <div class="bottom-btn-group">
                     <button class="bottom-btn" onclick="toggleFullscreen()">Fullscreen</button>
@@ -288,9 +288,8 @@
     <div id="settings-modal" class="modal-panel">
         <div class="modal-header">SETTINGS</div>
         <p>Audio Track Selection:</p>
-        <button class="bottom-btn" onclick="changeTrack(0)">1. Sci-Fi Theme</button>
-        <button class="bottom-btn" onclick="changeTrack(1)">2. Cybercrunk</button>
-        <button class="bottom-btn" onclick="changeTrack(2)">3. Rise Above</button>
+        <button class="bottom-btn" onclick="changeTrack(0)">1. Cybercrunk</button>
+        <button class="bottom-btn" onclick="changeTrack(1)">2. Rise Above</button>
         <button class="close-btn" onclick="closeModal('settings-modal')">CLOSE</button>
     </div>
 
@@ -301,7 +300,6 @@
 
     <script>
         const playlist = [
-            { name: "Sci-Fi Theme", file: "./assets/sci-fi_theme.mp3" },
             { name: "Cybercrunk", file: "./assets/cybercrunk.mp3" },
             { name: "Rise Above", file: "./assets/rise_above.mp3" }
         ];
@@ -361,7 +359,7 @@
         let keys = {};
 
         function init3D() {
-            if (scene) return; // Prevent double initialization
+            if (scene) return;
             const container = document.getElementById('canvas-container');
             
             scene = new THREE.Scene();
@@ -381,7 +379,6 @@
             dirLight.castShadow = true;
             scene.add(dirLight);
 
-            // Sky Dome with explicit relative path
             const skyGeo = new THREE.SphereGeometry(800, 32, 15);
             const textureLoader = new THREE.TextureLoader();
             textureLoader.load('./assets/skybox.png', (texture) => {
@@ -410,7 +407,6 @@
             fallbackBoxMesh.position.y = 0.4;
             car.add(fallbackBoxMesh);
 
-            // FBX Load with explicit relative path
             const fbxLoader = new THREE.FBXLoader();
             fbxLoader.load('./assets/car.fbx', (loadedCar) => {
                 const bbox = new THREE.Box3().setFromObject(loadedCar);
@@ -435,7 +431,7 @@
                 car.remove(fallbackBoxMesh);
                 car.add(loadedCar);
             }, undefined, (error) => {
-                console.warn('Could not load ./assets/car.fbx - check file availability and web server CORS setup.', error);
+                console.warn('Could not load ./assets/car.fbx', error);
             });
 
             scene.add(car);
