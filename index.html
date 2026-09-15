@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Roblocks</title>
+  <title>Rolebox</title>
   <style>
     * {
       box-sizing: border-box;
@@ -41,9 +41,9 @@
     const container = document.getElementById('canvas-container');
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x7EC0EE);
-    scene.fog = new THREE.FogExp2(0x7EC0EE, 0.015);
+    scene.fog = new THREE.FogExp2(0x7EC0EE, 0.008);
 
-    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -56,17 +56,18 @@
     scene.add(ambientLight);
 
     const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    dirLight.position.set(30, 50, 20);
     dirLight.castShadow = true;
     dirLight.shadow.mapSize.width = 2048;
     dirLight.shadow.mapSize.height = 2048;
     dirLight.shadow.camera.near = 0.5;
     dirLight.shadow.camera.far = 150;
-    const d = 50;
-    dirLight.shadow.camera.left = -d;
-    dirLight.shadow.camera.right = d;
-    dirLight.shadow.camera.top = d;
-    dirLight.shadow.camera.bottom = -d;
+    
+    // Shadow box dimensions around player
+    const shadowD = 60;
+    dirLight.shadow.camera.left = -shadowD;
+    dirLight.shadow.camera.right = shadowD;
+    dirLight.shadow.camera.top = shadowD;
+    dirLight.shadow.camera.bottom = -shadowD;
     scene.add(dirLight);
 
     // --- CANNON.JS PHYSICS ---
@@ -80,20 +81,23 @@
     world.addContactMaterial(contactMat);
 
     // --- BASEPLATE / GROUND ---
-    const groundGeo = new THREE.PlaneGeometry(300, 300);
+    const plateSize = 1000;
+    const plateThickness = 10;
+    
+    const groundGeo = new THREE.BoxGeometry(plateSize, plateThickness, plateSize);
     const groundMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.8 });
     const groundMesh = new THREE.Mesh(groundGeo, groundMat);
-    groundMesh.rotation.x = -Math.PI / 2;
+    groundMesh.position.set(0, -plateThickness / 2, 0);
     groundMesh.receiveShadow = true;
     scene.add(groundMesh);
 
-    const groundShape = new CANNON.Plane();
+    const groundShape = new CANNON.Box(new CANNON.Vec3(plateSize / 2, plateThickness / 2, plateSize / 2));
     const groundBody = new CANNON.Body({ mass: 0, material: physicsMaterial });
     groundBody.addShape(groundShape);
-    groundBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
+    groundBody.position.set(0, -plateThickness / 2, 0);
     world.addBody(groundBody);
 
-    // --- CAPSULE CREATOR ---
+    // --- CAPSULE MESH CREATOR ---
     function createCapsuleMesh(color) {
       const group = new THREE.Group();
       const radius = 0.5;
@@ -131,9 +135,14 @@
     }
 
     // --- LOCAL PLAYER PHYSICS & MODEL ---
-    const spawnX = (Math.random() - 0.5) * 10;
-    const spawnZ = (Math.random() - 0.5) * 10;
+    function getRandomSpawn() {
+      return {
+        x: (Math.random() - 0.5) * 40,
+        z: (Math.random() - 0.5) * 40
+      };
+    }
 
+    const initialSpawn = getRandomSpawn();
     const localCapsule = createCapsuleMesh(PLAYER_COLOR);
     scene.add(localCapsule.group);
 
@@ -149,10 +158,17 @@
     const sphereShape = new CANNON.Sphere(playerRadius);
     playerBody.addShape(sphereShape, new CANNON.Vec3(0, playerRadius, 0));
     playerBody.addShape(sphereShape, new CANNON.Vec3(0, playerHeight - playerRadius, 0));
-    playerBody.position.set(spawnX, 0, spawnZ);
+    playerBody.position.set(initialSpawn.x, 0, initialSpawn.z);
     world.addBody(playerBody);
 
-    // --- RELIABLE GROUNDED & JUMP LOGIC ---
+    function respawnPlayer() {
+      const sp = getRandomSpawn();
+      playerBody.position.set(sp.x, 2, sp.z);
+      playerBody.velocity.set(0, 0, 0);
+      playerBody.angularVelocity.set(0, 0, 0);
+    }
+
+    // Grounded detection
     function checkGrounded() {
       return Math.abs(playerBody.position.y) < 0.15 && Math.abs(playerBody.velocity.y) < 1.5;
     }
@@ -160,8 +176,8 @@
     // --- CONTROLS & CAMERA STATE ---
     const keys = { w: false, a: false, s: false, d: false, i: false, o: false };
     let cameraDistance = 4.5;
-    const minDistance = 0.0; // 0.0 triggers true First-Person mode
-    const maxDistance = 14.0;
+    const minDistance = 0.0; // 0.0 triggers First Person
+    const maxDistance = 18.0;
     let cameraYaw = 0;
     let cameraPitch = 0.1;
 
@@ -192,7 +208,7 @@
       if (e.code === 'KeyO') keys.o = false;
     });
 
-    // Mouse Drag Camera Angle
+    // Mouse Drag Camera Rotation
     document.addEventListener('mousedown', (e) => {
       isMouseDown = true;
       lastMouseX = e.clientX;
@@ -218,7 +234,7 @@
       cameraDistance = Math.max(minDistance, Math.min(maxDistance, cameraDistance));
     });
 
-    // --- MULTIPLAYER ---
+    // --- MULTIPLAYER (P2P WEBRTC + BROADCAST CHANNEL) ---
     const remotePlayers = {};
 
     function updateRemotePlayer(data) {
@@ -229,6 +245,7 @@
         remotePlayers[data.id] = { mesh: capsule.group, lastSeen: Date.now() };
       }
       const p = remotePlayers[data.id];
+      // Fixed position alignment so players sit flush on baseplate
       p.mesh.position.set(data.x, data.y, data.z);
       p.mesh.rotation.y = data.yaw;
       p.lastSeen = Date.now();
@@ -291,14 +308,28 @@
       const delta = Math.min(clock.getDelta(), 0.1);
       world.step(1 / 60, delta, 3);
 
+      // Void / Fall Death Respawn Check
+      if (playerBody.position.y < -20) {
+        respawnPlayer();
+      }
+
       // Keyboard Zoom Controls (I and O)
       if (keys.i) cameraDistance -= 4.0 * delta;
       if (keys.o) cameraDistance += 4.0 * delta;
       cameraDistance = Math.max(minDistance, Math.min(maxDistance, cameraDistance));
 
-      // Synchronize capsule mesh position & orientation
+      // Mesh alignment
       localCapsule.group.position.copy(playerBody.position);
       localCapsule.group.rotation.y = cameraYaw;
+
+      // Dynamic Sunlight Shadow Tracking (follows player)
+      dirLight.position.set(
+        playerBody.position.x + 30,
+        playerBody.position.y + 50,
+        playerBody.position.z + 20
+      );
+      dirLight.target.position.copy(playerBody.position);
+      dirLight.target.updateMatrixWorld();
 
       // WASD Movement
       const speed = 7.5;
@@ -325,11 +356,11 @@
         playerBody.velocity.z *= 0.82;
       }
 
-      // Check if fully zoomed into First Person mode
+      // Mode check: First Person vs Third Person
       const isFirstPerson = cameraDistance <= 0.25;
 
       if (isFirstPerson) {
-        // --- FIRST PERSON CAMERA LOGIC ---
+        // --- FIRST PERSON ---
         const eyeLevel = new THREE.Vector3(
           playerBody.position.x,
           playerBody.position.y + 1.6,
@@ -338,7 +369,6 @@
 
         camera.position.copy(eyeLevel);
 
-        // Look direction calculated from pitch & yaw
         const lookTarget = new THREE.Vector3(
           eyeLevel.x - Math.sin(cameraYaw) * Math.cos(cameraPitch),
           eyeLevel.y + Math.sin(cameraPitch),
@@ -347,14 +377,13 @@
 
         camera.lookAt(lookTarget);
 
-        // Completely hide local player capsule in First Person
         localCapsule.materials.forEach(mat => {
           mat.opacity = 0;
           mat.visible = false;
         });
 
       } else {
-        // --- THIRD PERSON CAMERA LOGIC ---
+        // --- THIRD PERSON ---
         const targetPos = new THREE.Vector3(
           playerBody.position.x,
           playerBody.position.y + 1.2,
@@ -365,12 +394,12 @@
         let cy = targetPos.y + cameraDistance * Math.sin(cameraPitch);
         const cz = targetPos.z + cameraDistance * Math.cos(cameraYaw) * Math.cos(cameraPitch);
 
-        cy = Math.max(0.35, cy); // Prevent dipping below ground plate
+        cy = Math.max(0.35, cy); // Hard camera floor clamp
 
         camera.position.set(cx, cy, cz);
         camera.lookAt(targetPos);
 
-        // Dynamic Transparency transition on zoom approach
+        // Transparency fade
         const currentDist = camera.position.distanceTo(targetPos);
         const fadeStart = 2.2;
         const fadeEnd = 0.45;
