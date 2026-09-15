@@ -23,6 +23,18 @@
       height: 100%;
       display: block;
     }
+    #debug-ui {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.7);
+      color: #0f0;
+      font-family: monospace;
+      padding: 10px;
+      font-size: 12px;
+      pointer-events: none;
+      line-height: 1.4;
+    }
   </style>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
@@ -31,11 +43,18 @@
 <body>
 
   <div id="canvas-container"></div>
+  <div id="debug-ui">Connected: <span id="debug-peers">0</span> | Players: <span id="debug-players">1</span></div>
 
   <script>
     // --- PLAYER IDENTITY ---
-    const LOCAL_PLAYER_ID = 'p_' + Math.random().toString(36).substr(2, 7);
+    const LOCAL_PLAYER_ID = 'p_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
     const PLAYER_COLOR = Math.floor(Math.random() * 0xffffff);
+
+    // --- DEBUG UI ---
+    function updateDebugUI() {
+      document.getElementById('debug-peers').textContent = Object.keys(peerConnections).length;
+      document.getElementById('debug-players').textContent = Object.keys(remotePlayers).length + 1;
+    }
 
     // --- THREE.JS SETUP ---
     const container = document.getElementById('canvas-container');
@@ -62,7 +81,6 @@
     dirLight.shadow.camera.near = 0.5;
     dirLight.shadow.camera.far = 150;
     
-    // Shadow box dimensions around player
     const shadowD = 60;
     dirLight.shadow.camera.left = -shadowD;
     dirLight.shadow.camera.right = shadowD;
@@ -152,13 +170,15 @@
     const playerBody = new CANNON.Body({
       mass: 5,
       material: physicsMaterial,
-      fixedRotation: true
+      fixedRotation: true,
+      linearDamping: 0.3,
+      angularDamping: 0.3
     });
 
     const sphereShape = new CANNON.Sphere(playerRadius);
     playerBody.addShape(sphereShape, new CANNON.Vec3(0, playerRadius, 0));
     playerBody.addShape(sphereShape, new CANNON.Vec3(0, playerHeight - playerRadius, 0));
-    playerBody.position.set(initialSpawn.x, 0, initialSpawn.z);
+    playerBody.position.set(initialSpawn.x, 2, initialSpawn.z);
     world.addBody(playerBody);
 
     function respawnPlayer() {
@@ -168,15 +188,21 @@
       playerBody.angularVelocity.set(0, 0, 0);
     }
 
-    // Grounded detection
+    // Improved grounded detection with raycast
+    let isGroundedResult = false;
     function checkGrounded() {
-      return Math.abs(playerBody.position.y) < 0.15 && Math.abs(playerBody.velocity.y) < 1.5;
+      const rayOrigin = playerBody.position;
+      const rayDir = new CANNON.Vec3(0, -1, 0);
+      const rayLength = playerRadius + 0.15;
+      const hit = world.raycastClosest(rayOrigin, new CANNON.Vec3(rayDir.x, rayDir.y * rayLength, rayDir.z), { collisionFilterGroup: 1 }, rayOrigin);
+      isGroundedResult = hit.body !== null && Math.abs(playerBody.velocity.y) < 2.5;
+      return isGroundedResult;
     }
 
     // --- CONTROLS & CAMERA STATE ---
     const keys = { w: false, a: false, s: false, d: false, i: false, o: false };
     let cameraDistance = 4.5;
-    const minDistance = 0.0; // 0.0 triggers First Person
+    const minDistance = 0.0;
     const maxDistance = 18.0;
     let cameraYaw = 0;
     let cameraPitch = 0.1;
@@ -230,22 +256,46 @@
     });
 
     document.addEventListener('wheel', (e) => {
+      e.preventDefault();
       cameraDistance += e.deltaY * 0.005;
       cameraDistance = Math.max(minDistance, Math.min(maxDistance, cameraDistance));
-    });
+    }, { passive: false });
 
     // --- MULTIPLAYER (P2P WEBRTC + BROADCAST CHANNEL) ---
     const remotePlayers = {};
+    const peerConnections = {};
+
+    function validatePlayerData(data) {
+      return data && 
+             typeof data.id === 'string' && 
+             typeof data.x === 'number' && 
+             typeof data.y === 'number' && 
+             typeof data.z === 'number' &&
+             typeof data.yaw === 'number' &&
+             Math.abs(data.x) < 500 &&
+             Math.abs(data.y) < 500 &&
+             Math.abs(data.z) < 500;
+    }
 
     function updateRemotePlayer(data) {
-      if (!data || data.id === LOCAL_PLAYER_ID) return;
+      if (!validatePlayerData(data) || data.id === LOCAL_PLAYER_ID) return;
+      
       if (!remotePlayers[data.id]) {
-        const capsule = createCapsuleMesh(data.color);
-        scene.add(capsule.group);
-        remotePlayers[data.id] = { mesh: capsule.group, lastSeen: Date.now() };
+        try {
+          const capsule = createCapsuleMesh(data.color || 0xffffff);
+          scene.add(capsule.group);
+          remotePlayers[data.id] = { 
+            mesh: capsule.group, 
+            lastSeen: Date.now(),
+            materials: capsule.materials
+          };
+        } catch (e) {
+          console.error('Failed to create remote player:', e);
+          return;
+        }
       }
+      
       const p = remotePlayers[data.id];
-      // Fixed position alignment so players sit flush on baseplate
       p.mesh.position.set(data.x, data.y, data.z);
       p.mesh.rotation.y = data.yaw;
       p.lastSeen = Date.now();
@@ -253,20 +303,45 @@
 
     const localChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('game_sync') : null;
     if (localChannel) {
-      localChannel.onmessage = (e) => updateRemotePlayer(e.data);
+      localChannel.onmessage = (e) => {
+        try {
+          updateRemotePlayer(e.data);
+        } catch (err) {
+          console.error('BroadcastChannel error:', err);
+        }
+      };
     }
 
-    const peerConnections = {};
-    const peer = new Peer(LOCAL_PLAYER_ID + '_' + Math.floor(Math.random()*1000));
+    const peer = new Peer(LOCAL_PLAYER_ID, {
+      debug: 0
+    });
 
-    peer.on('open', () => {
-      setInterval(() => broadcastState(), 50);
+    peer.on('open', (id) => {
+      console.log('Peer opened with ID:', id);
+      broadcastState(); // Send initial state
+      setInterval(() => broadcastState(), 100); // 100ms broadcast interval
     });
 
     peer.on('connection', (conn) => {
-      conn.on('data', (data) => updateRemotePlayer(data));
+      console.log('Incoming connection from:', conn.peer);
+      conn.on('data', (data) => {
+        try {
+          updateRemotePlayer(data);
+        } catch (err) {
+          console.error('Connection data error:', err);
+        }
+      });
+      conn.on('error', (err) => console.error('Connection error:', err));
       peerConnections[conn.peer] = conn;
+      updateDebugUI();
     });
+
+    peer.on('error', (err) => {
+      console.error('Peer error:', err);
+    });
+
+    // Store known peer IDs to establish outgoing connections
+    const knownPeers = new Set();
 
     function broadcastState() {
       const state = {
@@ -279,24 +354,41 @@
         time: Date.now()
       };
       
-      if (localChannel) localChannel.postMessage(state);
+      if (localChannel) {
+        try {
+          localChannel.postMessage(state);
+        } catch (err) {
+          console.error('BroadcastChannel post error:', err);
+        }
+      }
 
       for (const pId in peerConnections) {
-        if (peerConnections[pId].open) {
-          peerConnections[pId].send(state);
+        try {
+          if (peerConnections[pId].open) {
+            peerConnections[pId].send(state);
+          }
+        } catch (err) {
+          console.error('Peer send error:', err);
         }
       }
     }
 
+    // Periodic cleanup of stale players
     setInterval(() => {
       const now = Date.now();
-      const TIMEOUT = 20 * 60 * 1000;
+      const TIMEOUT = 20 * 60 * 1000; // 20 minutes
       for (const id in remotePlayers) {
         if (now - remotePlayers[id].lastSeen > TIMEOUT) {
-          scene.remove(remotePlayers[id].mesh);
-          delete remotePlayers[id];
+          try {
+            scene.remove(remotePlayers[id].mesh);
+            delete remotePlayers[id];
+            console.log('Removed stale player:', id);
+          } catch (err) {
+            console.error('Cleanup error:', err);
+          }
         }
       }
+      updateDebugUI();
     }, 5000);
 
     // --- GAME LOOP ---
@@ -305,7 +397,7 @@
     function animate() {
       requestAnimationFrame(animate);
 
-      const delta = Math.min(clock.getDelta(), 0.1);
+      const delta = Math.min(clock.getDelta(), 0.016); // Cap at ~60 FPS
       world.step(1 / 60, delta, 3);
 
       // Void / Fall Death Respawn Check
@@ -322,7 +414,7 @@
       localCapsule.group.position.copy(playerBody.position);
       localCapsule.group.rotation.y = cameraYaw;
 
-      // Dynamic Sunlight Shadow Tracking (follows player)
+      // Dynamic Sunlight Shadow Tracking
       dirLight.position.set(
         playerBody.position.x + 30,
         playerBody.position.y + 50,
@@ -331,7 +423,7 @@
       dirLight.target.position.copy(playerBody.position);
       dirLight.target.updateMatrixWorld();
 
-      // WASD Movement
+      // WASD Movement - only apply velocity when moving
       const speed = 7.5;
       let moveX = 0;
       let moveZ = 0;
@@ -352,11 +444,12 @@
         playerBody.velocity.x = (moveX * cos + moveZ * sin) * speed;
         playerBody.velocity.z = (-moveX * sin + moveZ * cos) * speed;
       } else {
+        // Apply damping only when not moving
         playerBody.velocity.x *= 0.82;
         playerBody.velocity.z *= 0.82;
       }
 
-      // Mode check: First Person vs Third Person
+      // Camera mode: First Person vs Third Person
       const isFirstPerson = cameraDistance <= 0.25;
 
       if (isFirstPerson) {
@@ -377,9 +470,9 @@
 
         camera.lookAt(lookTarget);
 
+        // Hide local player in first person
         localCapsule.materials.forEach(mat => {
           mat.opacity = 0;
-          mat.visible = false;
         });
 
       } else {
@@ -399,7 +492,7 @@
         camera.position.set(cx, cy, cz);
         camera.lookAt(targetPos);
 
-        // Transparency fade
+        // Transparency fade when camera gets close
         const currentDist = camera.position.distanceTo(targetPos);
         const fadeStart = 2.2;
         const fadeEnd = 0.45;
@@ -412,7 +505,6 @@
 
         localCapsule.materials.forEach(mat => {
           mat.opacity = opacity;
-          mat.visible = opacity > 0.02;
         });
       }
 
