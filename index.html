@@ -153,18 +153,14 @@
     world.addBody(playerBody);
 
     // --- RELIABLE GROUNDED & JUMP LOGIC ---
-    let canJump = false;
-
-    // Check height above floor for guaranteed ground detection
     function checkGrounded() {
-      // Body position 0 means capsule bottom rests at y = 0
       return Math.abs(playerBody.position.y) < 0.15 && Math.abs(playerBody.velocity.y) < 1.5;
     }
 
     // --- CONTROLS & CAMERA STATE ---
     const keys = { w: false, a: false, s: false, d: false, i: false, o: false };
     let cameraDistance = 4.5;
-    const minDistance = 0.1;
+    const minDistance = 0.0; // 0.0 triggers true First-Person mode
     const maxDistance = 14.0;
     let cameraYaw = 0;
     let cameraPitch = 0.1;
@@ -211,7 +207,7 @@
         const deltaY = e.clientY - lastMouseY;
         cameraYaw -= deltaX * 0.005;
         cameraPitch -= deltaY * 0.005;
-        cameraPitch = Math.max(-0.05, Math.min(Math.PI / 2.3, cameraPitch));
+        cameraPitch = Math.max(-Math.PI / 2.3, Math.min(Math.PI / 2.3, cameraPitch));
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
       }
@@ -222,7 +218,7 @@
       cameraDistance = Math.max(minDistance, Math.min(maxDistance, cameraDistance));
     });
 
-    // --- MULTIPLAYER (P2P WEBRTC + LOCAL CHANNEL FALLBACK) ---
+    // --- MULTIPLAYER ---
     const remotePlayers = {};
 
     function updateRemotePlayer(data) {
@@ -300,7 +296,7 @@
       if (keys.o) cameraDistance += 4.0 * delta;
       cameraDistance = Math.max(minDistance, Math.min(maxDistance, cameraDistance));
 
-      // Mesh alignment
+      // Synchronize capsule mesh position & orientation
       localCapsule.group.position.copy(playerBody.position);
       localCapsule.group.rotation.y = cameraYaw;
 
@@ -329,37 +325,67 @@
         playerBody.velocity.z *= 0.82;
       }
 
-      // Camera Orbit & Baseplate Clamp
-      const targetPos = new THREE.Vector3(
-        playerBody.position.x,
-        playerBody.position.y + 1.2,
-        playerBody.position.z
-      );
+      // Check if fully zoomed into First Person mode
+      const isFirstPerson = cameraDistance <= 0.25;
 
-      const cx = targetPos.x + cameraDistance * Math.sin(cameraYaw) * Math.cos(cameraPitch);
-      let cy = targetPos.y + cameraDistance * Math.sin(cameraPitch);
-      const cz = targetPos.z + cameraDistance * Math.cos(cameraYaw) * Math.cos(cameraPitch);
+      if (isFirstPerson) {
+        // --- FIRST PERSON CAMERA LOGIC ---
+        const eyeLevel = new THREE.Vector3(
+          playerBody.position.x,
+          playerBody.position.y + 1.6,
+          playerBody.position.z
+        );
 
-      cy = Math.max(0.35, cy);
+        camera.position.copy(eyeLevel);
 
-      camera.position.set(cx, cy, cz);
-      camera.lookAt(targetPos);
+        // Look direction calculated from pitch & yaw
+        const lookTarget = new THREE.Vector3(
+          eyeLevel.x - Math.sin(cameraYaw) * Math.cos(cameraPitch),
+          eyeLevel.y + Math.sin(cameraPitch),
+          eyeLevel.z - Math.cos(cameraYaw) * Math.cos(cameraPitch)
+        );
 
-      // Transparency on close zoom
-      const currentDist = camera.position.distanceTo(targetPos);
-      const fadeStart = 2.2;
-      const fadeEnd = 0.45;
+        camera.lookAt(lookTarget);
 
-      let opacity = 1.0;
-      if (currentDist < fadeStart) {
-        opacity = (currentDist - fadeEnd) / (fadeStart - fadeEnd);
-        opacity = Math.max(0, Math.min(1, opacity));
+        // Completely hide local player capsule in First Person
+        localCapsule.materials.forEach(mat => {
+          mat.opacity = 0;
+          mat.visible = false;
+        });
+
+      } else {
+        // --- THIRD PERSON CAMERA LOGIC ---
+        const targetPos = new THREE.Vector3(
+          playerBody.position.x,
+          playerBody.position.y + 1.2,
+          playerBody.position.z
+        );
+
+        const cx = targetPos.x + cameraDistance * Math.sin(cameraYaw) * Math.cos(cameraPitch);
+        let cy = targetPos.y + cameraDistance * Math.sin(cameraPitch);
+        const cz = targetPos.z + cameraDistance * Math.cos(cameraYaw) * Math.cos(cameraPitch);
+
+        cy = Math.max(0.35, cy); // Prevent dipping below ground plate
+
+        camera.position.set(cx, cy, cz);
+        camera.lookAt(targetPos);
+
+        // Dynamic Transparency transition on zoom approach
+        const currentDist = camera.position.distanceTo(targetPos);
+        const fadeStart = 2.2;
+        const fadeEnd = 0.45;
+
+        let opacity = 1.0;
+        if (currentDist < fadeStart) {
+          opacity = (currentDist - fadeEnd) / (fadeStart - fadeEnd);
+          opacity = Math.max(0, Math.min(1, opacity));
+        }
+
+        localCapsule.materials.forEach(mat => {
+          mat.opacity = opacity;
+          mat.visible = opacity > 0.02;
+        });
       }
-
-      localCapsule.materials.forEach(mat => {
-        mat.opacity = opacity;
-        mat.visible = opacity > 0.02;
-      });
 
       broadcastState();
       renderer.render(scene, camera);
