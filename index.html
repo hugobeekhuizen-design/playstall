@@ -37,9 +37,6 @@
     const LOCAL_PLAYER_ID = 'p_' + Math.random().toString(36).substr(2, 7);
     const PLAYER_COLOR = Math.floor(Math.random() * 0xffffff);
 
-    // Dynamic room based on URL anchor (e.g. index.html#myroom) or default room
-    const ROOM_ID = location.hash ? location.hash.substring(1) : 'global_room_3d';
-
     // --- THREE.JS SETUP ---
     const container = document.getElementById('canvas-container');
     const scene = new THREE.Scene();
@@ -155,15 +152,14 @@
     playerBody.position.set(spawnX, 0, spawnZ);
     world.addBody(playerBody);
 
-    // --- JUMPING DETECTOR ---
-    let isGrounded = false;
-    playerBody.addEventListener('collide', (e) => {
-      const contact = e.contact;
-      if ((contact.bi.id === playerBody.id && contact.ni.y > 0.4) ||
-          (contact.bj.id === playerBody.id && contact.ni.y < -0.4)) {
-        isGrounded = true;
-      }
-    });
+    // --- RELIABLE GROUNDED & JUMP LOGIC ---
+    let canJump = false;
+
+    // Check height above floor for guaranteed ground detection
+    function checkGrounded() {
+      // Body position 0 means capsule bottom rests at y = 0
+      return Math.abs(playerBody.position.y) < 0.15 && Math.abs(playerBody.velocity.y) < 1.5;
+    }
 
     // --- CONTROLS & CAMERA STATE ---
     const keys = { w: false, a: false, s: false, d: false, i: false, o: false };
@@ -185,9 +181,8 @@
       if (e.code === 'KeyI') keys.i = true;
       if (e.code === 'KeyO') keys.o = true;
       if (e.code === 'Space') {
-        if (isGrounded) {
-          playerBody.velocity.y = 8.5;
-          isGrounded = false;
+        if (checkGrounded()) {
+          playerBody.velocity.y = 9.5;
         }
       }
     });
@@ -201,7 +196,7 @@
       if (e.code === 'KeyO') keys.o = false;
     });
 
-    // Click & Drag Camera Rotation (No Force Lock)
+    // Mouse Drag Camera Angle
     document.addEventListener('mousedown', (e) => {
       isMouseDown = true;
       lastMouseX = e.clientX;
@@ -216,7 +211,6 @@
         const deltaY = e.clientY - lastMouseY;
         cameraYaw -= deltaX * 0.005;
         cameraPitch -= deltaY * 0.005;
-        // Pitch limit to prevent clipping under floor plate
         cameraPitch = Math.max(-0.05, Math.min(Math.PI / 2.3, cameraPitch));
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
@@ -244,23 +238,16 @@
       p.lastSeen = Date.now();
     }
 
-    // Local tab communication fallback
     const localChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('game_sync') : null;
     if (localChannel) {
       localChannel.onmessage = (e) => updateRemotePlayer(e.data);
     }
 
-    // PeerJS cross-computer internet multiplayer setup
     const peerConnections = {};
     const peer = new Peer(LOCAL_PLAYER_ID + '_' + Math.floor(Math.random()*1000));
 
-    peer.on('open', (id) => {
-      // Connect to local tab/peer broadcast channel via PeerJS
-      if (localChannel) {
-        setInterval(() => {
-          broadcastState();
-        }, 50);
-      }
+    peer.on('open', () => {
+      setInterval(() => broadcastState(), 50);
     });
 
     peer.on('connection', (conn) => {
@@ -279,10 +266,8 @@
         time: Date.now()
       };
       
-      // Send to local tabs
       if (localChannel) localChannel.postMessage(state);
 
-      // Send to connected WebRTC remote peers
       for (const pId in peerConnections) {
         if (peerConnections[pId].open) {
           peerConnections[pId].send(state);
@@ -290,7 +275,6 @@
       }
     }
 
-    // Clean up inactive players (20-minute inactivity tolerance)
     setInterval(() => {
       const now = Date.now();
       const TIMEOUT = 20 * 60 * 1000;
@@ -316,7 +300,7 @@
       if (keys.o) cameraDistance += 4.0 * delta;
       cameraDistance = Math.max(minDistance, Math.min(maxDistance, cameraDistance));
 
-      // Synchronize capsule mesh position & orientation
+      // Mesh alignment
       localCapsule.group.position.copy(playerBody.position);
       localCapsule.group.rotation.y = cameraYaw;
 
@@ -345,7 +329,7 @@
         playerBody.velocity.z *= 0.82;
       }
 
-      // Camera Position & Clamp above baseplate
+      // Camera Orbit & Baseplate Clamp
       const targetPos = new THREE.Vector3(
         playerBody.position.x,
         playerBody.position.y + 1.2,
@@ -356,13 +340,12 @@
       let cy = targetPos.y + cameraDistance * Math.sin(cameraPitch);
       const cz = targetPos.z + cameraDistance * Math.cos(cameraYaw) * Math.cos(cameraPitch);
 
-      // HARD CLAMP: Prevent camera from dipping below the baseplate (y >= 0.35)
       cy = Math.max(0.35, cy);
 
       camera.position.set(cx, cy, cz);
       camera.lookAt(targetPos);
 
-      // Dynamic Character Fade / Transparency on Close Zoom
+      // Transparency on close zoom
       const currentDist = camera.position.distanceTo(targetPos);
       const fadeStart = 2.2;
       const fadeEnd = 0.45;
